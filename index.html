@@ -1,300 +1,41 @@
-<!DOCTYPE html>
-<html lang="ja">
+<!DOCTYPYE html>
+<html>
 <head>
+<title>
+Image_3D-SYSTEM V0.0.1
+</title>
 <meta charset="UTF-8">
-<title>Stereo Depth Editor Pro</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<style>
-body { font-family: sans-serif; background:#222; color:#eee; }
-#toolbar { padding:10px; background:#333; }
-canvas { border:1px solid #555; margin:5px; touch-action:none; }
-.container { display:flex; flex-wrap:wrap; }
-.panel { margin:10px; }
-button { margin-right:5px; }
-</style>
 </head>
-<body>
 
-<div id="toolbar">
-<input type="file" id="fileInput">
+        <body>
 
-<button onclick="setTool('brush')">ブラシ</button>
-<button onclick="setTool('erase')">消しゴム</button>
-<button onclick="setTool('blur')">ぼかし</button>
+                <p><font size="5">
+                画像
+                </font></p>
+                <ul>
+                <font size="4">
+                <a href="/pin_img"> pin_img </a><br><br>
+                <ul>
+                <a href="/pin_img/VH"> VH </a><br><br><br>
+                </font>
+                </ul></ul>
+                <p><font size="5">
+                済画像
+                </font></p>
+                <ul>
+                <font size="4">
+                <ul>
+                <a href="/image3d.html"> img3d.html </a><br><br>
 
-サイズ <input type="range" id="size" min="5" max="100" value="30">
-強度 <input type="range" id="strength" min="0.1" max="1" step="0.1" value="0.5">
-深度 <input type="range" id="depth" min="0" max="255" value="200">
+                <a href="/image3dAI.html"> img3dAI.html </a><br><br>
 
-<button onclick="undo()">Undo</button>
-<button onclick="saveSBS()">SBS保存</button>
-</div>
+                
+                </ul></ul>
 
-<div class="container">
-<div class="panel">
-<p>元画像</p>
-<canvas id="base"></canvas>
-</div>
 
-<div class="panel">
-<p>深度編集（画像＋深度）</p>
-<canvas id="depthCanvas"></canvas>
-</div>
 
-<div class="panel">
-<p>3D（サイドバイサイド）</p>
-<canvas id="preview"></canvas>
-</div>
-</div>
-
-<script>
-const base = document.getElementById("base");
-const depthCanvas = document.getElementById("depthCanvas");
-const preview = document.getElementById("preview");
-
-const bctx = base.getContext("2d");
-const dctx = depthCanvas.getContext("2d");
-const pctx = preview.getContext("2d");
-
-// 深度データ専用
-const depthBufferCanvas = document.createElement("canvas");
-const dbctx = depthBufferCanvas.getContext("2d");
-
-let img = new Image();
-let drawing = false;
-
-let state = {
-    tool: "brush",
-    size: 30,
-    strength: 0.5,
-    depth: 200
-};
-
-let history = [];
-
-document.getElementById("fileInput").onchange = e => {
-    const file = e.target.files[0];
-    const reader = new FileReader();
-    reader.onload = ev => {
-        img.onload = () => init();
-        img.src = ev.target.result;
-    };
-    reader.readAsDataURL(file);
-};
-
-function init(){
-    [base, depthCanvas, depthBufferCanvas].forEach(c=>{
-        c.width = img.width;
-        c.height = img.height;
-    });
-
-    preview.width = img.width * 2;
-    preview.height = img.height;
-
-    // 元画像
-    bctx.drawImage(img,0,0);
-
-    // 深度初期化
-    dbctx.fillStyle="black";
-    dbctx.fillRect(0,0,img.width,img.height);
-
-    redrawDepthView();
-    updatePreview();
-}
-
-function redrawDepthView(){
-    dctx.clearRect(0,0,depthCanvas.width,depthCanvas.height);
-
-    // 元画像
-    dctx.globalAlpha = 1.0;
-    dctx.drawImage(img,0,0);
-
-    // 深度（半透明）
-    dctx.globalAlpha = 0.5;
-    dctx.drawImage(depthBufferCanvas,0,0);
-
-    dctx.globalAlpha = 1.0;
-}
-
-function setTool(t){ state.tool = t; }
-
-depthCanvas.onmousedown = ()=> {
-    drawing = true;
-    saveHistory();
-};
-depthCanvas.onmouseup = ()=> drawing = false;
-depthCanvas.onmousemove = e=>{
-    if(!drawing) return;
-    handleDraw(e.clientX, e.clientY);
-};
-
-// タッチ対応（iPad）
-depthCanvas.addEventListener("touchstart", e=>{
-    e.preventDefault();
-    drawing = true;
-    saveHistory();
-}, {passive:false});
-
-depthCanvas.addEventListener("touchend", ()=>{
-    drawing = false;
-});
-
-depthCanvas.addEventListener("touchmove", e=>{
-    e.preventDefault();
-    const touch = e.touches[0];
-    handleDraw(touch.clientX, touch.clientY);
-}, {passive:false});
-
-function handleDraw(clientX, clientY){
-    state.size = +size.value;
-    state.strength = +strength.value;
-    state.depth = +depth.value;
-
-    const rect = depthCanvas.getBoundingClientRect();
-    const x = clientX - rect.left;
-    const y = clientY - rect.top;
-
-    if(state.tool==="blur"){
-        blur(x,y);
-    }else{
-        paint(x,y);
-    }
-
-    redrawDepthView();
-    updatePreview();
-}
-
-function paint(x,y){
-    const r = state.size;
-    const val = state.tool==="erase"?0:state.depth;
-
-    const grd = dbctx.createRadialGradient(x,y,0,x,y,r);
-    grd.addColorStop(0,`rgba(${val},${val},${val},${state.strength})`);
-    grd.addColorStop(1,`rgba(${val},${val},${val},0)`);
-
-    dbctx.fillStyle = grd;
-    dbctx.beginPath();
-    dbctx.arc(x,y,r,0,Math.PI*2);
-    dbctx.fill();
-}
-
-function blur(x,y){
-    const s = state.size;
-    const img = dbctx.getImageData(x-s,y-s,s*2,s*2);
-
-    for(let i=0;i<img.data.length;i+=4){
-        img.data[i] *= 0.9;
-        img.data[i+1] *= 0.9;
-        img.data[i+2] *= 0.9;
-    }
-
-    dbctx.putImageData(img,x-s,y-s);
-}
-
-function getDepth(){
-    const data = dbctx.getImageData(0,0,img.width,img.height).data;
-    const depth = new Float32Array(img.width*img.height);
-
-    for(let i=0;i<depth.length;i++){
-        depth[i] = data[i*4];
-    }
-    return depth;
-}
-
-function createDisparity(depth,str=30){
-    const disp = new Float32Array(depth.length);
-    for(let i=0;i<depth.length;i++){
-        disp[i] = (1 - depth[i]/255)*str;
-    }
-    return disp;
-}
-
-function warp(src,disp,w,h,dir){
-    const out = new Uint8ClampedArray(src.length);
-
-    for(let y=0;y<h;y++){
-        for(let x=0;x<w;x++){
-            const i = y*w+x;
-            const d = disp[i];
-            const nx = Math.round(x + dir*d);
-
-            if(nx>=0 && nx<w){
-                const si = i*4;
-                const ni = (y*w+nx)*4;
-
-                out[ni]=src[si];
-                out[ni+1]=src[si+1];
-                out[ni+2]=src[si+2];
-                out[ni+3]=255;
-            }
-        }
-    }
-    return out;
-}
-
-function fill(img,w,h){
-    for(let y=0;y<h;y++){
-        let last=null;
-        for(let x=0;x<w;x++){
-            const i=(y*w+x)*4;
-            if(img[i+3]===0){
-                if(last) img.set(last,i);
-            }else{
-                last=img.slice(i,i+4);
-            }
-        }
-    }
-}
-
-function updatePreview(){
-    const w = base.width;
-    const h = base.height;
-
-    const src = bctx.getImageData(0,0,w,h).data;
-    const depth = getDepth();
-    const disp = createDisparity(depth);
-
-    const left = warp(src,disp,w,h,-1);
-    const right= warp(src,disp,w,h,1);
-
-    fill(left,w,h);
-    fill(right,w,h);
-
-    const imgData = pctx.createImageData(w*2,h);
-
-    for(let y=0;y<h;y++){
-        for(let x=0;x<w;x++){
-            const i=(y*w+x)*4;
-            const li=(y*w*2+x)*4;
-            const ri=(y*w*2+x+w)*4;
-
-            imgData.data.set(left.slice(i,i+4),li);
-            imgData.data.set(right.slice(i,i+4),ri);
-        }
-    }
-
-    pctx.putImageData(imgData,0,0);
-}
-
-function saveSBS(){
-    const link = document.createElement("a");
-    link.download = "stereo_sbs.png";
-    link.href = preview.toDataURL("image/png");
-    link.click();
-}
-
-function saveHistory(){
-    history.push(dbctx.getImageData(0,0,img.width,img.height));
-}
-
-function undo(){
-    if(history.length>0){
-        dbctx.putImageData(history.pop(),0,0);
-        redrawDepthView();
-        updatePreview();
-    }
-}
-</script>
-
-</body>
+                <br><br><br><br>
+                                    
+	</body>
+</head>
 </html>
