@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<title>Stereo Depth Editor Pro</title>
+<title>Stereo Depth Editor Ultimate</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
 body { font-family: sans-serif; background:#222; color:#eee; }
@@ -11,6 +11,7 @@ canvas { border:1px solid #555; margin:5px; touch-action:none; }
 .container { display:flex; flex-wrap:wrap; }
 .panel { margin:10px; }
 button { margin-right:5px; }
+.panel canvas { transform-origin: top left; }
 </style>
 </head>
 <body>
@@ -26,6 +27,10 @@ button { margin-right:5px; }
 強度 <input type="range" id="strength" min="0.1" max="1" step="0.1" value="0.5">
 深度 <input type="range" id="depth" min="0" max="255" value="200">
 
+ズーム <input type="range" id="zoom" min="0.5" max="3" step="0.1" value="1">
+
+<label><input type="checkbox" id="swap"> 左右反転</label>
+
 <button onclick="undo()">Undo</button>
 <button onclick="saveSBS()">SBS保存</button>
 </div>
@@ -37,12 +42,12 @@ button { margin-right:5px; }
 </div>
 
 <div class="panel">
-<p>深度編集（画像＋深度）</p>
+<p>深度編集</p>
 <canvas id="depthCanvas"></canvas>
 </div>
 
 <div class="panel">
-<p>3D（サイドバイサイド）</p>
+<p>3D（SBS）</p>
 <canvas id="preview"></canvas>
 </div>
 </div>
@@ -56,172 +61,164 @@ const bctx = base.getContext("2d");
 const dctx = depthCanvas.getContext("2d");
 const pctx = preview.getContext("2d");
 
-// 深度データ専用
 const depthBufferCanvas = document.createElement("canvas");
 const dbctx = depthBufferCanvas.getContext("2d");
 
 let img = new Image();
 let drawing = false;
+let zoom = 1;
+let depthCache = null;
+let pending = false;
+
+const PREVIEW_SCALE = 0.5;
 
 let state = {
-    tool: "brush",
-    size: 30,
-    strength: 0.5,
-    depth: 200
+    tool:"brush",
+    size:30,
+    strength:0.5,
+    depth:200
 };
 
-let history = [];
+let history=[];
 
-document.getElementById("fileInput").onchange = e => {
-    const file = e.target.files[0];
+fileInput.onchange = e=>{
     const reader = new FileReader();
-    reader.onload = ev => {
-        img.onload = () => init();
+    reader.onload = ev=>{
+        img.onload = init;
         img.src = ev.target.result;
     };
-    reader.readAsDataURL(file);
+    reader.readAsDataURL(e.target.files[0]);
 };
 
 function init(){
-    [base, depthCanvas, depthBufferCanvas].forEach(c=>{
+    [base,depthCanvas,depthBufferCanvas].forEach(c=>{
         c.width = img.width;
         c.height = img.height;
     });
 
-    preview.width = img.width * 2;
-    preview.height = img.height;
+    preview.width = img.width*PREVIEW_SCALE*2;
+    preview.height = img.height*PREVIEW_SCALE;
 
-    // 元画像
     bctx.drawImage(img,0,0);
 
-    // 深度初期化
     dbctx.fillStyle="black";
     dbctx.fillRect(0,0,img.width,img.height);
 
     redrawDepthView();
-    updatePreview();
+    requestUpdate();
 }
 
 function redrawDepthView(){
     dctx.clearRect(0,0,depthCanvas.width,depthCanvas.height);
-
-    // 元画像
-    dctx.globalAlpha = 1.0;
     dctx.drawImage(img,0,0);
-
-    // 深度（半透明）
-    dctx.globalAlpha = 0.5;
+    dctx.globalAlpha=0.5;
     dctx.drawImage(depthBufferCanvas,0,0);
-
-    dctx.globalAlpha = 1.0;
+    dctx.globalAlpha=1;
 }
 
-function setTool(t){ state.tool = t; }
+function setTool(t){state.tool=t;}
 
-depthCanvas.onmousedown = ()=> {
-    drawing = true;
-    saveHistory();
-};
-depthCanvas.onmouseup = ()=> drawing = false;
-depthCanvas.onmousemove = e=>{
-    if(!drawing) return;
-    handleDraw(e.clientX, e.clientY);
+zoom.oninput = e=>{
+    zoom=parseFloat(e.target.value);
+    base.style.transform=`scale(${zoom})`;
+    depthCanvas.style.transform=`scale(${zoom})`;
 };
 
-// タッチ対応（iPad）
-depthCanvas.addEventListener("touchstart", e=>{
+function getPos(cx,cy){
+    const r=depthCanvas.getBoundingClientRect();
+    return {x:(cx-r.left)/zoom,y:(cy-r.top)/zoom};
+}
+
+depthCanvas.onmousedown=()=>{drawing=true;saveHistory();};
+depthCanvas.onmouseup=()=>drawing=false;
+depthCanvas.onmousemove=e=>{
+    if(!drawing)return;
+    handleDraw(e.clientX,e.clientY);
+};
+
+depthCanvas.addEventListener("touchstart",e=>{
+    e.preventDefault();drawing=true;saveHistory();
+},{passive:false});
+
+depthCanvas.addEventListener("touchend",()=>drawing=false);
+
+depthCanvas.addEventListener("touchmove",e=>{
     e.preventDefault();
-    drawing = true;
-    saveHistory();
-}, {passive:false});
+    const t=e.touches[0];
+    handleDraw(t.clientX,t.clientY);
+},{passive:false});
 
-depthCanvas.addEventListener("touchend", ()=>{
-    drawing = false;
-});
+function handleDraw(cx,cy){
+    state.size=+size.value;
+    state.strength=+strength.value;
+    state.depth=+depth.value;
 
-depthCanvas.addEventListener("touchmove", e=>{
-    e.preventDefault();
-    const touch = e.touches[0];
-    handleDraw(touch.clientX, touch.clientY);
-}, {passive:false});
+    const {x,y}=getPos(cx,cy);
 
-function handleDraw(clientX, clientY){
-    state.size = +size.value;
-    state.strength = +strength.value;
-    state.depth = +depth.value;
+    if(state.tool==="blur") blur(x,y);
+    else paint(x,y);
 
-    const rect = depthCanvas.getBoundingClientRect();
-    const x = clientX - rect.left;
-    const y = clientY - rect.top;
-
-    if(state.tool==="blur"){
-        blur(x,y);
-    }else{
-        paint(x,y);
-    }
-
+    depthCache=null;
     redrawDepthView();
-    updatePreview();
+    requestUpdate();
 }
 
 function paint(x,y){
-    const r = state.size;
-    const val = state.tool==="erase"?0:state.depth;
+    const r=state.size;
+    const val=state.tool==="erase"?0:state.depth;
 
-    const grd = dbctx.createRadialGradient(x,y,0,x,y,r);
-    grd.addColorStop(0,`rgba(${val},${val},${val},${state.strength})`);
-    grd.addColorStop(1,`rgba(${val},${val},${val},0)`);
+    const g=dbctx.createRadialGradient(x,y,0,x,y,r);
+    g.addColorStop(0,`rgba(${val},${val},${val},${state.strength})`);
+    g.addColorStop(1,`rgba(${val},${val},${val},0)`);
 
-    dbctx.fillStyle = grd;
+    dbctx.fillStyle=g;
     dbctx.beginPath();
     dbctx.arc(x,y,r,0,Math.PI*2);
     dbctx.fill();
 }
 
 function blur(x,y){
-    const s = state.size;
-    const img = dbctx.getImageData(x-s,y-s,s*2,s*2);
+    const s=state.size;
+    const img=dbctx.getImageData(x-s,y-s,s*2,s*2);
 
     for(let i=0;i<img.data.length;i+=4){
-        img.data[i] *= 0.9;
-        img.data[i+1] *= 0.9;
-        img.data[i+2] *= 0.9;
+        img.data[i]*=0.9;
+        img.data[i+1]*=0.9;
+        img.data[i+2]*=0.9;
     }
 
     dbctx.putImageData(img,x-s,y-s);
 }
 
 function getDepth(){
-    const data = dbctx.getImageData(0,0,img.width,img.height).data;
-    const depth = new Float32Array(img.width*img.height);
+    if(depthCache) return depthCache;
 
-    for(let i=0;i<depth.length;i++){
-        depth[i] = data[i*4];
+    const data=dbctx.getImageData(0,0,img.width,img.height).data;
+    depthCache=new Float32Array(img.width*img.height);
+
+    for(let i=0;i<depthCache.length;i++){
+        depthCache[i]=data[i*4];
     }
-    return depth;
+    return depthCache;
 }
 
 function createDisparity(depth,str=30){
-    const disp = new Float32Array(depth.length);
-    for(let i=0;i<depth.length;i++){
-        disp[i] = (1 - depth[i]/255)*str;
+    const d=new Float32Array(depth.length);
+    for(let i=0;i<d.length;i++){
+        d[i]=(1-depth[i]/255)*str;
     }
-    return disp;
+    return d;
 }
 
 function warp(src,disp,w,h,dir){
-    const out = new Uint8ClampedArray(src.length);
-
+    const out=new Uint8ClampedArray(src.length);
     for(let y=0;y<h;y++){
         for(let x=0;x<w;x++){
-            const i = y*w+x;
-            const d = disp[i];
-            const nx = Math.round(x + dir*d);
-
-            if(nx>=0 && nx<w){
-                const si = i*4;
-                const ni = (y*w+nx)*4;
-
+            const i=y*w+x;
+            const nx=Math.round(x+dir*disp[i]);
+            if(nx>=0&&nx<w){
+                const si=i*4;
+                const ni=(y*w+nx)*4;
                 out[ni]=src[si];
                 out[ni+1]=src[si+1];
                 out[ni+2]=src[si+2];
@@ -246,40 +243,64 @@ function fill(img,w,h){
     }
 }
 
+function requestUpdate(){
+    if(pending)return;
+    pending=true;
+    requestAnimationFrame(()=>{
+        updatePreview();
+        pending=false;
+    });
+}
+
 function updatePreview(){
-    const w = base.width;
-    const h = base.height;
+    const swap=swapCheck.checked;
 
-    const src = bctx.getImageData(0,0,w,h).data;
-    const depth = getDepth();
-    const disp = createDisparity(depth);
+    const w=img.width;
+    const h=img.height;
+    const pw=Math.floor(w*PREVIEW_SCALE);
+    const ph=Math.floor(h*PREVIEW_SCALE);
 
-    const left = warp(src,disp,w,h,-1);
-    const right= warp(src,disp,w,h,1);
+    const temp=document.createElement("canvas");
+    temp.width=pw;
+    temp.height=ph;
+    const tctx=temp.getContext("2d");
+    tctx.drawImage(base,0,0,pw,ph);
 
-    fill(left,w,h);
-    fill(right,w,h);
+    const src=tctx.getImageData(0,0,pw,ph).data;
+    const depth=getDepth();
+    const disp=createDisparity(depth);
 
-    const imgData = pctx.createImageData(w*2,h);
+    const left=warp(src,disp,pw,ph,-1);
+    const right=warp(src,disp,pw,ph,1);
 
-    for(let y=0;y<h;y++){
-        for(let x=0;x<w;x++){
-            const i=(y*w+x)*4;
-            const li=(y*w*2+x)*4;
-            const ri=(y*w*2+x+w)*4;
+    fill(left,pw,ph);
+    fill(right,pw,ph);
 
-            imgData.data.set(left.slice(i,i+4),li);
-            imgData.data.set(right.slice(i,i+4),ri);
+    const out=pctx.createImageData(pw*2,ph);
+
+    for(let y=0;y<ph;y++){
+        for(let x=0;x<pw;x++){
+            const i=(y*pw+x)*4;
+            const li=(y*pw*2+x)*4;
+            const ri=(y*pw*2+x+pw)*4;
+
+            if(swap){
+                out.data.set(right.slice(i,i+4),li);
+                out.data.set(left.slice(i,i+4),ri);
+            }else{
+                out.data.set(left.slice(i,i+4),li);
+                out.data.set(right.slice(i,i+4),ri);
+            }
         }
     }
 
-    pctx.putImageData(imgData,0,0);
+    pctx.putImageData(out,0,0);
 }
 
 function saveSBS(){
-    const link = document.createElement("a");
-    link.download = "stereo_sbs.png";
-    link.href = preview.toDataURL("image/png");
+    const link=document.createElement("a");
+    link.download="stereo_sbs.png";
+    link.href=preview.toDataURL("image/png");
     link.click();
 }
 
@@ -291,10 +312,11 @@ function undo(){
     if(history.length>0){
         dbctx.putImageData(history.pop(),0,0);
         redrawDepthView();
-        updatePreview();
+        requestUpdate();
     }
 }
 </script>
 
 </body>
 </html>
+
